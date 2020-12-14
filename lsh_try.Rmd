@@ -1,0 +1,277 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# load libraries
+library(rvest) # web scraping 
+library(stringr) # string manipulation 
+library(dplyr) # data manipulation 
+library(tidyr) # tidy data
+library(purrr) # functional programming 
+library(scales) # formatting for rmd output 
+library(ggplot2) # plots
+library(numbers) # divisors function 
+library(textreuse) # detecting text reuse and # document similarity
+library(widyr)
+```
+
+
+```{r}
+#сделаем веса и из этого датафрейма сеть
+total_w <- total13 %>% pairwise_count(appid, user_id, sort = TRUE)
+total_w1 = total13 %>% pairwise_count(user_id, appid, sort = TRUE)
+save(total_w, file = "total_w.rda")
+#обязательно переименовать колонку в weightened
+names(total_w)
+total_w <- total_w %>%rename(weight = n)
+total_w$kek <- c(0,1)
+total_w <- total_w %>% filter(total_w$kek != "0")
+total_w <- total_w %>% select(-kek)
+g = graph_from_data_frame(total_w[1:10,], directed = FALSE)
+plot(g)
+```
+
+
+
+
+```{r}
+library(igraph)
+#строим сеть
+total10 = data.frame(
+  appid = as.character(K2_games_all$appid),
+  user_id = as.character(K2_games_all$user_id),
+  stringsAsFactors = FALSE
+)
+
+total11 = total10[!duplicated(total10),]
+total13 = total11[c(1:50000),]
+
+g= graph_from_data_frame(total13, directed = FALSE)
+
+g = get.adjacency(graph.edgelist(as.matrix(total13), directed=FALSE))
+```
+
+
+```{r}
+library(tidyverse)
+total_mat <- spread(total13, appid, num, fill = 0)
+head(total_mat)
+rownames(total_mat) <- str_c("id", total_mat$user_id, sep = "_")
+names(total_mat)
+total_mat <- total_mat %>% select(-user_id)
+
+g = igraph::simplify(g)
+V(g)$type = bipartite_mapping(g)$type
+types <- V(g)$type ## getting each vertex `type` let's us sort easily
+
+bipartite_matrix <- as_incidence_matrix(g)
+
+head(bipartite_matrix)
+bipartite_matrix1 = t(bipartite_matrix)
+head(bipartite_matrix1)
+```
+
+```{r}
+# set seed for reproducibility
+set.seed(09142017)
+# get permutation order
+permute_order <- sample(seq_len(nrow(bipartite_matrix1)))
+
+# get min location of "1" for each column (apply(2, ..
+sig_matrix <- bipartite_matrix1[permute_order, -1] %>% apply(2, function(col) min(which(col == 1))) %>% as.matrix() %>% t()
+
+# inspect results
+library(knitr)
+sig_matrix[1, 1:4] %>% 
+  kable()
+```
+
+```{r}
+# function to get signature for 1 permutation
+get_sig <- function(char_matrix) {
+# get permutation order
+permute_order <- sample(seq_len(nrow(char_matrix)))
+# get min location of "1" for each column (apply(2, ...))
+char_matrix[permute_order, -1] %>%
+apply(2, function(col) min(which(col == 1))) %>% as.matrix() %>% t()
+}
+
+# repeat many times
+m <- 3744
+for(i in 1:(m - 1)) {
+sig_matrix <- rbind(sig_matrix, get_sig(bipartite_matrix1)) }
+
+# inspect results
+sig_matrix[1:4, 1:4] %>% kable()
+```
+
+```{r}
+# look at probability of binned together for various bin sizes and similarity values
+tibble(s = c(.25, .75), h = m) %>% # look at two different similarity values
+mutate(b = (map(h, divisors))) %>% # find possible bin sizes for m 
+unnest() %>% # expand dataframe
+group_by(h, b, s) %>%
+mutate(prob = lsh_probability(h, b, s)) %>%
+ungroup() -> bin_probs # get probabilities
+
+# plot as curves
+bin_probs %>%
+mutate(s = factor(s)) %>%
+ggplot() +
+geom_line(aes(x = prob, y = b, colour = s, group = s)) + geom_point(aes(x = prob, y = b, colour = factor(s)))
+
+# look as some candidate b
+bin_probs %>%
+spread(s, prob) %>% select(-h) %>%
+filter(b > 50 & b < 200) %>% kable()
+```
+
+```{r}
+# bin the signature matrix
+b <- 90 
+sig_matrix %>%
+as_tibble() %>%
+mutate(bin = rep(1:b, each = m/b)) %>% # add bins
+gather(appid, hash, -bin) %>% # tall data instead of wide
+group_by(bin, appid) %>% # within each bin, get the min-hash values for each song
+summarise(hash = paste0(hash, collapse = "-")) %>%
+ungroup() -> binned_sig
+
+# inspect results
+binned_sig %>% head() %>% kable()
+```
+
+
+
+```{r}
+# create the minhash function
+head(minhashes(corpus[[1]]))
+
+length(minhashes(corpus[[1]]))
+
+minhash <- minhash_generator(n = m, seed = 09142017) # add it to the corpus
+
+lsh_threshold(h = 200, b = 50)
+lsh_threshold(h = 240, b = 80)
+
+lsh_probability(h = 240, b = 80, s = 0.25)
+lsh_probability(h = 240, b =  80, s = 0.75)
+
+corpus <- rehash(corpus, minhash, type="minhashes") # perform lsh to get buckets
+
+buckets <- lsh(corpus, bands = b, progress = FALSE) # grab candidate pairs
+
+buckets <- lsh(corpus, bands = 80, progress = FALSE)
+buckets
+
+candidates <- lsh_candidates(buckets)
+
+corpus <- TextReuseCorpus(dir = bipartite_matrix1, minhash_func = minhash, keep_tokens = TRUE)
+
+# get Jaccard similarities only for candidates
+lsh_compare(candidates, corpus, jaccard_similarity, progress = FALSE) %>% arrange(desc(score)) %>%
+kable()
+```
+
+
+
+```{r}
+library(textreuse)
+minhash <- minhash_generator(n = 240, seed = 3552)
+head(minhash(c("turn tokens into", "tokens into hashes", "into hashes fast")))
+dir <- system.file("extdata/ats", package = "textreuse")
+corpus <- TextReuseCorpus(dir = dir, tokenizer = tokenize_ngrams, n = 5,
+                          minhash_func = minhash, keep_tokens = TRUE,
+                          progress = FALSE)
+
+meta(corpus)
+head(tokens(corpus))
+head(hashes(corpus))
+wordcount(corpus)
+
+s = total11 %>% 
+  group_by(user_id) %>%
+  summarise(value = paste(appid, collapse = " "))
+
+
+corpus = TextReuseCorpus(text = s$value,
+                         meta=s,
+                         tokenizer=tokenize_words,
+                         minhash_func = minhash, 
+                         keep_tokens = TRUE,
+                         progress = TRUE)
+skipped(corpus)
+
+kek = lsh(corpus,bands=20)                          
+lsh_candidates(kek)
+
+head(minhashes(corpus[[1]]))
+length(minhashes(corpus[[1]]))
+                          
+lsh_threshold(h = 200, b = 50)   
+lsh_threshold(h = 240, b = 80)
+
+lsh_probability(h = 240, b = 80, s = 0.25) #similarity of over 0.25
+lsh_probability(h = 240, b =  80, s = 0.75) # similarity of over 0.75
+
+buckets <- lsh(corpus, bands = 80, progress = TRUE)
+buckets
+
+baxter_matches <- lsh_query(buckets, "44e334fbe6708e380adad6c9e952ac54") # ID of the corpus
+baxter_matches
+
+candidates <- lsh_candidates(buckets)
+candidates
+
+lsh_compare = lsh_compare(candidates, corpus, jaccard_similarity, progress = TRUE)
+save(lsh_compare, file = "lsh_compare.rda")
+```
+
+```{r}
+library(ggplot2)
+library(umap)
+library(dplyr)
+lsh_umap = t(lsh_compare)
+lsh_umap = lsh_umap[!duplicated(lsh_umap),]
+
+umap <- umap(lsh_umap, perplexity = 5)
+
+df <- data.frame(x = umap$layout[,1],
+                 y = umap$layout[,2])
+
+ggplot(df, aes(x, y)) +
+  geom_point()
+```
+
+```{r}
+tsne <- Rtsne(lsh_umap, perplexity = 5) # got warning perplexity is too large
+
+df <- data.frame(x = tsne$Y[,1],
+                 y = tsne$Y[,2])
+
+ggplot(df, aes(x, y)) +
+  geom_point()
+```
+
+
+Отсюда взять, что такое m и b
+```{r}
+# create the minhash function
+minhash <- minhash_generator(n = m, seed = 09142017) # add it to the corpus
+corpus <- rehash(corpus, minhash, type="minhashes") # perform lsh to get buckets
+buckets <- lsh(corpus, bands = b, progress = FALSE) # grab candidate pairs
+candidates <- lsh_candidates(buckets)
+# get Jaccard similarities only for candidates
+lsh_compare(candidates, corpus, jaccard_similarity, progress = FALSE) %>% arrange(desc(score)) %>%
+kable()
+```
+
+
+
+
