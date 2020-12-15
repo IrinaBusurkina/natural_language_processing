@@ -1,0 +1,142 @@
+---
+title: "plagiat_detection"
+output: html_document
+---
+
+```{r}
+library(textreuse)
+library(textreadr)
+library(parallel)
+library(purrr)
+library(dplyr)
+library(tidytext)
+```
+
+
+```{r}
+cl = makeCluster(detectCores() - 1)
+docx_files = list.files(path ="/Users/irinabusurkina/Downloads/Reflexive_Diary_DA",pattern="*.docx",full.names = TRUE)
+
+docx_list = parLapply(cl, docx_files,function(x) textreadr::read_docx(file=x,method = "R"))
+stopCluster(cl)
+
+dfs = data.frame()
+for(i in 1:26){
+  wd = docx_list[[i]] %>% 
+  unlist() %>% 
+  as.data.frame() %>% 
+  rename(text = ".") 
+  wd = wd %>% 
+  mutate(name = rep(1, nrow(wd))) %>% 
+  dplyr::group_by(name) %>%
+  dplyr::summarise(text = paste(text, collapse = " "))
+  dfs = rbind(dfs,wd)
+  dfs = dfs %>% mutate(name = 1:nrow(dfs))
+}
+```
+
+не использую
+```{r}
+dfs_words = dfs %>%
+  unnest_tokens(word, text) %>%
+  mutate(word_lemma = textstem::lemmatize_words(word))
+
+# удаляем стоп-слова
+data("stop_words")
+names(stop_words)[1] = "word_lemma"
+
+dfs_words <- dfs_words %>% #удалила стоп-слова
+  anti_join(stop_words)
+
+# обратно собираем тексты
+texts = dfs_words %>% 
+        group_by(name) %>%  
+        summarise(text = paste0(word,collapse=" ")) 
+```
+
+
+```{r}
+minhash <- minhash_generator(n = 240, seed = 3552)
+head(minhash(c("turn tokens into", "tokens into hashes", "into hashes fast")))
+
+corpus = TextReuseCorpus(text = dfs$text,
+                         meta=dfs,
+                         tokenizer=tokenize_ngrams,
+                         minhash_func = minhash, 
+                         keep_tokens = TRUE,
+                         progress = TRUE)
+```
+
+```{r}
+# take a glimpse on skipped documents (он может пропускать слишком короткие документы, например если у игрока слишком мало игр)
+skipped(corpus)
+
+m = meta(corpus)
+#each token - appid
+head(tokens(corpus))
+#see hashes of each token
+head(hashes(corpus))
+#in our case all documents have the same numer of tokens - 10
+wordcount(corpus)
+
+#We can verify that we have minhashes in our corpus:
+head(minhashes(corpus[[1]]))
+#Now all our documents are represented by n = 240 randomly selected and hashed shingles. Comparing those shingles should be the equivalent of finding the Jaccard similarity of the two documents. 
+length(minhashes(corpus[[1]]))
+```
+
+```{r}
+#раскидываем документы по бакетам
+buckets <- lsh(corpus, bands = 80, progress = TRUE)
+buckets
+
+#We can extract the potential matches from the cache using lsh_query() or lsh_candidates(). The first function returns matches for only one document, specified by its ID
+baxter_matches <- lsh_query(buckets, "44e334fbe6708e380adad6c9e952ac54") # ID of the corpus
+baxter_matches
+#the second functions returns all potential pairs of matches. now we have pairs to compare, but we don't have a score to compare yet
+candidates <- lsh_candidates(buckets)
+candidates
+
+#Now we can use lsh_compare() to apply a similarity function to the candidate pairs of documents. Note that we only have to do 3 comparisons for all the candidates, instead of 28 pairs when comparing all 8 documents in the corpus pairwise.
+lsh_compare = lsh_compare(candidates, corpus, jaccard_similarity, progress = TRUE)
+names(lsh_compare)[3] = "weight"
+```
+
+
+```{r}
+plag = lsh_compare %>% 
+  group_by(a) %>% 
+  summarise(count = n())
+```
+
+```{r}
+library(igraph)
+library(tidyverse)
+
+total = data.frame(
+  sudent1 = as.character(lsh_compare$a),
+  student2 = as.character(lsh_compare$b),
+  stringsAsFactors = FALSE
+)
+
+g = graph_from_data_frame(lsh_compare, directed = TRUE)
+is.weighted(g)
+g = simplify(g)
+```
+
+```{r}
+degree = degree(g, v = V(g), mode = c("all"),
+  loops = TRUE, normalized = FALSE)
+
+library(visNetwork)
+netvis1 <- toVisNetworkData(g)
+netvis1$nodes$title = netvis1$nodes$label
+netvis1$nodes$size = degree*5
+netvis1$edges$value = netvis1$edges$weight
+#netvis1$nodes$size = V(g)$degree
+
+visNetwork(nodes = netvis1$nodes, edges = netvis1$edges, height = "800px", width = "1600px") %>% 
+  visIgraphLayout(layout = "layout_in_circle") %>% 
+  visEdges(arrows ="to") 
+```
+
