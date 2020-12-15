@@ -1,0 +1,67 @@
+```{r}
+library(tidyverse)
+#сделать матрицу
+stm_matrix <- spread(prop, membership, prop, fill = 0)
+stm_matrix = ungroup(stm_matrix)
+rownames(stm_matrix) = stm_matrix$steamid
+stm_matrix = stm_matrix %>% select(-steamid)
+```
+
+```{r}
+# these are the commands needed to run the archetypal analysis
+library(archetypes)
+aa<-stepArchetypes(stm_matrix, k=1:10, nrep=5)
+screeplot(aa)
+rss(aa)
+```
+
+сделать модель с наилучшим числом кластеров
+```{r}
+aa_3<-bestModel(aa[[7]])
+round(t(parameters(aa_3)),7)
+aa_3_profile<-coef(aa_3)
+aa_3_cluster<-max.col(aa_3_profile)
+table(aa_3_cluster)
+```
+
+profiles for archetypes added to original data as supplementary points in order to map the results in a two-dimensional principal component space - не делаю
+```{r}
+aa_profile<-parameters(aa_3)
+```
+
+пересобрать обратно архетипы
+```{r}
+aa_profile = as.data.frame(aa_profile)
+aa_profile$archetype = c(1:7)
+aa_gather = gather(aa_profile, "membership", "value", 1:67)
+
+#присоединить мету в виде топиков и термс
+
+```
+
+посмотреть топ 5 топиков по каждому архетипу 
+```{r}
+archetypes = aa_gather %>%
+  group_by(archetype) %>%
+  top_n(5, value) %>%
+  ungroup() 
+  unique(archetypes$membership)
+
+  archetypes %>% 
+  ggplot(aes(membership, value)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~archetype, scales = "free_y") +
+  labs(y = "top 5 topics for each archetype",
+       x = NULL) +
+  coord_flip()
+```
+
+найти примеры текстов архетипов
+```{r}
+docs = td_gamma_df %>% 
+  group_by(recommendationid) %>% 
+  top_n(4, gamma)
+```
+
+
+
